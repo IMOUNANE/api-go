@@ -7,7 +7,6 @@ import (
 	"net/http"
 )
 
-
 // Définir une structure pour représenter les données JSON
 type PackageInfo struct {
 	Path      string `json:"Path"`
