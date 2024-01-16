@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // Définir une structure pour représenter les données JSON
@@ -17,14 +18,20 @@ type PackageInfo struct {
 // Variable globale pour stocker les informations des packages
 var globalPackages []PackageInfo
 
-func countInstances() map[string]int {
-	// Créer une carte pour stocker le nombre d'instances pour chaque valeur unique de "Path"
+func countInitialSegments() map[string]int {
+	// Créer une carte pour stocker le nombre d'instances pour chaque segment initial unique
 	countMap := make(map[string]int)
 
 	// Parcourir les informations des packages
 	for _, pkg := range globalPackages {
-		// Incrémenter le compteur pour la valeur de "Path"
-		countMap[pkg.Path]++
+		// Extraire le premier segment du chemin
+		segments := strings.Split(pkg.Path, "/")
+		if len(segments) > 0 {
+			initialSegment := segments[0]
+
+			// Incrémenter le compteur pour le segment initial
+			countMap[initialSegment]++
+		}
 	}
 
 	return countMap
@@ -66,10 +73,10 @@ func getIndexGolang() {
 		return
 	}
 
-	// Afficher le nombre d'instances pour chaque valeur unique de "Path"
-	countMap := countInstances()
-	for path, count := range countMap {
-		fmt.Printf("Nombre d'instances pour %s : %d\n", path, count)
+	// Afficher le nombre d'instances pour chaque segment initial
+	countMap := countInitialSegments()
+	for segment, count := range countMap {
+		fmt.Printf("Nombre d'instances pour %s : %d\n", segment, count)
 	}
 }
 
