@@ -2,84 +2,157 @@ package main
 
 import (
 	"bufio"
+	"sort"
+	"strings"
+	"text/tabwriter"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"strings"
+	"os"
 )
 
-// Définir une structure pour représenter les données JSON
-type PackageInfo struct {
-	Path      string `json:"Path"`
-	Version   string `json:"Version"`
-	Timestamp string `json:"Timestamp"`
+type formatedData = map[string]map[string]int
+
+type index struct {
+	Path string
+	Version string
+	Timestamp string
 }
 
-// Variable globale pour stocker les informations des packages
-var globalPackages []PackageInfo
+type sortableFormatedData struct {
+	forge string
+	modules int
+	versions int
+}
 
-func countInitialSegments() map[string]int {
-	// Créer une carte pour stocker le nombre d'instances pour chaque segment initial unique
-	countMap := make(map[string]int)
+const (
+	baseURL = "https://index.golang.org/index"
+	moduleIndexName = "Modules"
+	versionsIndexName = "Versions"
+)
 
-	// Parcourir les informations des packages
-	for _, pkg := range globalPackages {
-		// Extraire le premier segment du chemin
-		segments := strings.Split(pkg.Path, "/")
-		if len(segments) > 0 {
-			initialSegment := segments[0]
+var (
+	client *http.Client
+	indexes []index
+)
 
-			// Incrémenter le compteur pour le segment initial
-			countMap[initialSegment]++
+
+func groupIndexesByVersions(indexes []index) formatedData {
+	groupedIndexes := make(formatedData)
+	for _, ix := range indexes {
+		if repo, ok := groupedIndexes[ix.Path]; ok {
+			repo["Versions"]++
+		} else {
+			groupedIndexes[ix.Path] = map[string]int{moduleIndexName: 1, versionsIndexName: 1}
 		}
 	}
 
-	return countMap
+	return groupedIndexes
 }
 
-func getIndexGolang() {
-	// URL à laquelle faire la requête GET
-	url := "https://index.golang.org/index"
+func groupFormatedIndexesByVersions(data formatedData) formatedData {
+	groupedData := make(formatedData)
 
-	// Faire la requête HTTP GET
-	response, err := http.Get(url)
+	for repo, meta := range data {
+		forgeFormated := strings.Split(repo, "/")[0]
+
+		if forge, ok := groupedData[forgeFormated]; ok {
+			forge[moduleIndexName] += meta[moduleIndexName]
+			forge[versionsIndexName] += meta[versionsIndexName]
+		} else {
+			groupedData[forgeFormated] = meta
+		}
+	}
+
+	return groupedData
+}
+
+func sortFormatedData(data formatedData) []sortableFormatedData {
+	var slice []sortableFormatedData
+
+	for f, meta := range data {
+		slice = append(slice, sortableFormatedData{
+			forge:    f,
+			modules:  meta[moduleIndexName],
+			versions: meta[versionsIndexName],
+		})
+	}
+
+	sort.Slice(slice, func(i, j int) bool {
+		return slice[i].versions > slice[j].versions
+	})
+
+	return slice
+}
+
+func render(data formatedData) {
+	sortedData := sortFormatedData(data)
+	
+	w := new(tabwriter.Writer)
+	w.Init(os.Stdout, 20, 4, 0, ' ', 0)
+	defer w.Flush()
+
+	fmt.Fprintf(w,"Forge\t Modules\t Versions\n")
+	totalModules := 0
+	totalVersions := 0
+
+	for _, d := range sortedData {
+		fmt.Fprintf(w,"%s\t %d\t %d\n", d.forge, d.modules, d.versions)
+		totalModules += d.modules
+		totalVersions += d.versions
+	}
+
+	fmt.Fprintf(w, "_total_\t %d\t %d\t", totalModules, totalVersions)
+}
+
+func getIndexGolang() (*http.Response, error) {
+	client = &http.Client{}
+
+	request, err := http.NewRequest("GET", baseURL, nil)
 	if err != nil {
-		fmt.Println("Erreur lors de la requête GET :", err)
-		return
-	}
-	defer response.Body.Close()
-
-	// Scanner pour lire le corps de la réponse ligne par ligne
-	scanner := bufio.NewScanner(response.Body)
-	for scanner.Scan() {
-		// Chaque ligne contient un objet JSON
-		line := scanner.Text()
-
-		// Décodez le JSON dans la structure de données
-		var pkg PackageInfo
-		err := json.Unmarshal([]byte(line), &pkg)
-		if err != nil {
-			fmt.Println("Erreur lors du décodage JSON :", err)
-			continue
-		}
-
-		// Ajouter les informations du package à la liste globale
-		globalPackages = append(globalPackages, pkg)
+		return nil, err
 	}
 
-	// Vérifier les erreurs de numérisation
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Erreur lors de la lecture du corps de la réponse :", err)
-		return
+	request.Header.Add("Disable-Module-Fetch", "true")
+
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
 	}
 
-	// Afficher le nombre d'instances pour chaque segment initial
-	countMap := countInitialSegments()
-	for segment, count := range countMap {
-		fmt.Printf("Nombre d'instances pour %s : %d\n", segment, count)
-	}
+	return response, nil
 }
 
 func main() {
-	getIndexGolang()
+	response, err := getIndexGolang()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode < 400 {
+		var indexes []index
+
+		scanner := bufio.NewScanner(response.Body)
+		for scanner.Scan() {
+			var indexData index
+			if err := json.Unmarshal(scanner.Bytes(), &indexData); err != nil {
+				log.Printf(err.Error())
+			}
+			indexes = append(indexes, indexData)
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Fatal(err)
+		}
+
+		groupedByIndex := groupIndexesByVersions(indexes)
+		groupedByVersion := groupFormatedIndexesByVersions(groupedByIndex)
+
+		render(groupedByVersion)
+	} else {
+		log.Printf("Erreur de statut de la réponse : %d", response.StatusCode)
+	}
 }
